@@ -1,14 +1,11 @@
 {
-    "builds": [
-      {
-        "src": "index.html",
-        "use": "@vercel/static-build",
-        "config": {
-          "distDir": "dist"
-        }
+    "build": {
+      "env": {
+        "VITE_SUPABASE_URL": "@vite-supabase-url",
+        "VITE_SUPABASE_ANON_KEY": "@vite-supabase-anon-key",
+        "VITE_GROQ_API_KEY": "@vite-groq-api-key"
       }
-    ],
-    "ignoreCommand": "echo 'Ignoring backend files on Vercel'",
-    "outputDirectory": "dist"
+    },
+    "ignoreCommand": "echo 'Ignoring backend files on Vercel'"
   }
   

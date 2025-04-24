@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Base styles using your Tailwind v3 color palette */
+@layer base {
+  body {
+    @apply bg-background text-text-primary;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply text-text-primary;
+  }
+
+  p {
+    @apply text-text-secondary;
+  }
+
+  a {
+    @apply text-accent hover:underline;
+  }
+
+  button {
+    @apply transition-colors;
+  }
+
+  input, textarea {
+    @apply border border-gray-300 rounded px-3 py-2 text-sm;
+  }
+}

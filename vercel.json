@@ -1,11 +1,14 @@
 {
-    "ignoreCommand": "echo 'Ignoring backend during Vercel build'",
     "builds": [
       {
         "src": "index.html",
-        "use": "@vercel/static"
+        "use": "@vercel/static-build",
+        "config": {
+          "distDir": "dist"
+        }
       }
     ],
+    "ignoreCommand": "echo 'Ignoring backend files on Vercel'",
     "outputDirectory": "dist"
   }
   

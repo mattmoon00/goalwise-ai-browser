@@ -8,6 +8,8 @@ import AuthPage from "./pages/Auth";
 import { useAuth } from "./contexts/AuthContext";
 import Transactions from "./pages/Transactions";
 import Onboarding from "./pages/Onboarding"; // add this import
+import Upgrade from "./pages/Upgrade";
+import Success from "./pages/Success";
 
 
 import "./index.css"; // this line is essential
@@ -33,6 +35,8 @@ function App() {
               </PrivateRoute>
             }
           />
+          <Route path="/success" element={<Success />} />
+
           <Route
             path="/budget"
             element={
@@ -54,6 +58,14 @@ function App() {
   element={
     <PrivateRoute>
       <Onboarding />
+    </PrivateRoute>
+  }
+/>
+<Route
+  path="/upgrade"
+  element={
+    <PrivateRoute>
+      <Upgrade />
     </PrivateRoute>
   }
 />

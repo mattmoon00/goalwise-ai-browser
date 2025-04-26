@@ -5,7 +5,6 @@ import dotenv from "dotenv";
 import { Groq } from "groq-sdk";
 import { jsonrepair } from "jsonrepair";
 import crypto from "crypto";
-
 dotenv.config();
 
 const router = express.Router();
@@ -14,80 +13,101 @@ const groq = new Groq({ apiKey: process.env.VITE_GROQ_API_KEY });
 function hashData(data: any) {
   return crypto.createHash("sha256").update(JSON.stringify(data)).digest("hex");
 }
-
 function toMountainDateString(date: Date) {
   const utc = date.getTime() + date.getTimezoneOffset() * 60000;
   const mtOffset = -6;
-  const mt = new Date(utc + mtOffset * 60 * 60 * 1000);
-  return mt.toISOString().split("T")[0];
+  return new Date(utc + mtOffset * 3600000).toISOString().split("T")[0];
+}
+
+function sanitizeInsights(raw: any, plan: string) {
+  if (
+    plan === "premium" &&
+    typeof raw === "object" &&
+    raw.summary &&
+    raw.actionItems &&
+    raw.nextSteps
+  ) {
+    return {
+      summary: String(raw.summary).trim(),
+      actionItems: Array.isArray(raw.actionItems)
+        ? raw.actionItems.map(i => String(i).trim())
+        : [],
+      nextSteps: Array.isArray(raw.nextSteps)
+        ? raw.nextSteps.map(i => String(i).trim())
+        : [],
+    };
+  }
+
+  if (plan === "growth" && Array.isArray(raw)) {
+    return {
+      tips: raw
+        .filter((t: any) => t && typeof t.tip === "string")
+        .map((t: any) => t.tip.trim())
+        .filter(Boolean),
+    };
+  }
+
+  return null;
 }
 
 router.post("/", async (req, res) => {
   const { budgetItems, goals, transactions, userId } = req.body;
-
-  if (!userId) {
-    return res.status(400).json({ error: "Missing userId" });
-  }
+  if (!userId) return res.status(400).json({ error: "Missing userId" });
 
   const currentHash = hashData({ budgetItems, goals, transactions });
   const today = toMountainDateString(new Date());
 
-  // Fetch user subscription plan + profile info
   const { data: profile, error: profileError } = await supabase
     .from("profiles")
     .select("subscription_plan, name")
     .eq("id", userId)
     .single();
-
   if (profileError || !profile) {
-    console.error("❌ Supabase profile fetch error:", profileError?.message || profileError);
-    return res.status(500).json({ error: "Failed to determine subscription plan" });
+    console.error("❌ Supabase fetch profile:", profileError);
+    return res.status(500).json({ error: "Could not fetch profile" });
   }
-
   const plan = profile.subscription_plan;
   const userName = profile.name;
 
-  // Check if insights already exist for this hash and today
-  const { data: existingRow } = await supabase
+  const { data: existing } = await supabase
     .from("user_insights")
     .select("insights, last_updated, data_hash")
     .eq("user_id", userId)
     .single();
-
   if (
-    existingRow &&
-    existingRow.data_hash === currentHash &&
-    existingRow.last_updated?.split("T")[0] === today
+    existing &&
+    existing.data_hash === currentHash &&
+    existing.last_updated?.split("T")[0] === today
   ) {
-    return res.json({ insights: existingRow.insights });
+    return res.json({ insights: existing.insights });
   }
 
-  try {
-    const prompt =
-      plan === "premium"
-        ? generateAiCoachPrompt(budgetItems, goals, transactions, userName)
-        : generateBasicPrompt(budgetItems, goals, transactions);
+  // choose prompt
+  const prompt =
+    plan === "premium"
+      ? generateAiCoachPrompt(budgetItems, goals, transactions, userName)
+      : generateBasicPrompt(budgetItems, goals, transactions);
 
-    const response = await groq.chat.completions.create({
+  try {
+    const aiResponse = await groq.chat.completions.create({
       model: "llama3-8b-8192",
       messages: [{ role: "user", content: prompt }],
-      temperature: 0.7,
+      temperature: 0,
     });
 
-    const raw = response.choices[0]?.message?.content || "";
+    const raw = aiResponse.choices[0]?.message?.content || "";
     console.log("🧠 Raw AI response:\n", raw);
 
-    let insights;
-    try {
-      const repaired = jsonrepair(raw);
-      insights = JSON.parse(repaired);
-    } catch (jsonErr) {
-      console.error("❌ JSON parsing failed:", jsonErr.message);
-      return res.status(500).json({
-        error: "Failed to parse AI response",
-        rawResponse: raw,
-        details: jsonErr.message,
-      });
+    // pull out only the JSON block
+    const jsonMatch = raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+    if (!jsonMatch) throw new Error("No JSON found in AI response");
+    const repaired = jsonrepair(jsonMatch[0]);
+    const parsed = JSON.parse(repaired);
+
+    const insights = sanitizeInsights(parsed, plan);
+    if (!insights) {
+      console.warn("⚠️ Sanitization failed");
+      return res.json({ insights: null });
     }
 
     await supabase.from("user_insights").upsert({
@@ -97,38 +117,36 @@ router.post("/", async (req, res) => {
       last_updated: new Date().toISOString(),
     });
 
-    res.json({ insights });
-  } catch (err) {
-    console.error("❌ Error generating insights:", err.message || err);
-    res.status(500).json({
-      error: "Failed to generate insights",
-      details: err.message || err,
-    });
+    return res.json({ insights });
+  } catch (err: any) {
+    console.error("❌ Insight generation error:", err);
+    return res.status(500).json({ error: "AI processing failed" });
   }
 });
 
-// PROMPTS
-function generateBasicPrompt(budgetItems: any[], goals: any[], transactions: any[]) {
+// ——— PROMPTS ———
+
+function generateBasicPrompt(
+  budgetItems: any[],
+  goals: any[],
+  transactions: any[]
+): string {
   return `
-You are a budgeting assistant. Based on the following data, return 3 concise tips in JSON format. Each tip should be a short string under 160 characters.
+You are a budgeting assistant. Analyze the user's data and return exactly three concise tips.  
+1) List the top 3 spending categories.  
+2) Show their income vs expenses ratio.  
+3) Highlight a single large transaction.  
 
-Tips should follow a smart priority: prioritize debt payoff first, then emergency funds, then investments or fun savings like trips or cars.
-
-Return format:
+**Output ONLY** this JSON array, nothing else:
 [
   { "tip": "..." },
   { "tip": "..." },
   { "tip": "..." }
 ]
 
-Budget Items:
-${JSON.stringify(budgetItems, null, 2)}
-
-Goals:
-${JSON.stringify(goals, null, 2)}
-
-Transactions:
-${JSON.stringify(transactions, null, 2)}
+BudgetItems: ${JSON.stringify(budgetItems, null, 2)}  
+Goals:       ${JSON.stringify(goals, null, 2)}  
+Transactions:${JSON.stringify(transactions, null, 2)}
 `;
 }
 
@@ -137,37 +155,28 @@ function generateAiCoachPrompt(
   goals: any[],
   transactions: any[],
   name?: string
-) {
-  const greeting = name ? `Hey ${name},` : "Hello,";
-
+): string {
+  const greeting = name ? `Hey ${name},` : "";
   return `
-You are a world-class financial coach trained in behavioral finance and practical budgeting. You are creating a monthly review of a user's finances. 
+You are an elite financial coach. Respond with **only** this JSON object and nothing else:
 
-✅ ONLY return a valid JSON object matching this format:
 {
-  "summary": "One paragraph overview of their financial situation in plain language.",
-  "actionItems": ["Do this", "And this", "Don't forget to..."],
-  "nextSteps": ["First step to take", "Another suggestion"]
+  "summary":    "One motivational paragraph covering income vs expenses, progress toward each goal, and category insights.",
+  "actionItems":["Three clear tasks to do this month."],
+  "nextSteps":  ["Three sequential next steps for ongoing improvement."]
 }
 
-❌ DO NOT include markdown, bullet points, or explanations outside of this JSON structure.
+Include:
+• Percent spent per top category  
+• Percent progress per goal  
+• Call out any anomaly >20% of income  
+• Personalize with "${greeting}"
 
-Greet the user with: "${greeting}" in the summary. Your tone should be warm and motivational, but also honest. Keep it under 300 words total.
-
-Prioritize debt payoff first, then emergency funds, then savings/fun goals. Provide clear, concise advice and next steps.
-
----
-
-Budget Items:
-${JSON.stringify(budgetItems, null, 2)}
-
-Goals:
-${JSON.stringify(goals, null, 2)}
-
-Transactions:
-${JSON.stringify(transactions, null, 2)}
+DATA  
+BudgetItems: ${JSON.stringify(budgetItems, null, 2)}  
+Goals:       ${JSON.stringify(goals, null, 2)}  
+Transactions:${JSON.stringify(transactions, null, 2)}
 `;
 }
-
 
 export default router;

@@ -1,11 +1,9 @@
 {
-    "build": {
-      "env": {
-        "VITE_SUPABASE_URL": "@vite-supabase-url",
-        "VITE_SUPABASE_ANON_KEY": "@vite-supabase-anon-key",
-        "VITE_GROQ_API_KEY": "@vite-groq-api-key"
-      }
-    },
-    "ignoreCommand": "echo 'Ignoring backend files on Vercel'"
+    "buildCommand": "npm run build",
+    "outputDirectory": "dist",
+    "framework": "vite",
+    "rewrites": [
+      { "source": "/api/(.*)", "destination": "/api/$1" }
+    ]
   }
   

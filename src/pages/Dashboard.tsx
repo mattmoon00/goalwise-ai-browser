@@ -1,4 +1,3 @@
-// src/pages/Dashboard.tsx
 import { useEffect, useState } from "react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../contexts/AuthContext";
@@ -24,6 +23,7 @@ interface AiInsights {
   summary?: string;
   actionItems?: string[];
   nextSteps?: string[];
+  tips?: string[];  // <- now a flat string array
 }
 
 function toMountainDateString(date: Date) {
@@ -48,7 +48,9 @@ export default function Dashboard() {
   const [budgetItems, setBudgetItems] = useState<BudgetItem[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [insights, setInsights] = useState<AiInsights | null>(null);
-  const [subscription, setSubscription] = useState<string | null>(null);
+  const [subscription, setSubscription] = useState<
+    "free" | "growth" | "premium" | null
+  >(null);
   const [loading, setLoading] = useState(true);
 
   const monthlyAmount = (item: BudgetItem) => {
@@ -62,63 +64,80 @@ export default function Dashboard() {
     }
   };
 
+  // load budget, goals and plan
   const fetchData = async () => {
     if (!user) return;
-
     const [budgetRes, goalsRes, profileRes] = await Promise.all([
-      supabase.from("budget_items").select("*").eq("user_id", user.id),
+      supabase
+        .from("budget_items")
+        .select("*")
+        .eq("user_id", user.id),
       supabase.from("goals").select("*").eq("user_id", user.id),
-      supabase.from("profiles").select("subscription_plan").eq("id", user.id).single(),
+      supabase
+        .from("profiles")
+        .select("subscription_plan")
+        .eq("id", user.id)
+        .single(),
     ]);
-
     if (budgetRes.data) setBudgetItems(budgetRes.data);
     if (goalsRes.data) setGoals(goalsRes.data);
-    if (profileRes.data?.subscription_plan) setSubscription(profileRes.data.subscription_plan);
+    if (profileRes.data?.subscription_plan)
+      setSubscription(profileRes.data.subscription_plan);
   };
 
-  const fetchInsights = async (budgetData: BudgetItem[], goalsData: Goal[]) => {
+  // call /api/insights when data+plan loaded
+  const fetchInsights = async (
+    budgetData: BudgetItem[],
+    goalsData: Goal[]
+  ) => {
     if (!user || subscription === "free") return;
 
-    const transactions = [];
-    const hash = await hashData({ budgetItems: budgetData, goals: goalsData, transactions });
+    const transactions: any[] = [];
+    const hash = await hashData({
+      budgetItems: budgetData,
+      goals: goalsData,
+      transactions,
+    });
     const today = toMountainDateString(new Date());
 
+    // cache check
     const cached = localStorage.getItem("ai_insights_cache");
     if (cached) {
       try {
         const { insights, lastUpdated, dataHash } = JSON.parse(cached);
-        const isSameDay = lastUpdated === today;
-        const isSameData = dataHash === hash;
-
-        if (isSameDay && isSameData) {
+        if (lastUpdated === today && dataHash === hash) {
           setInsights(insights);
           return;
         }
       } catch {
-        console.warn("Corrupt cache, ignoring.");
+        console.warn("⚠️ Ignoring corrupt cache.");
       }
     }
 
     try {
-      const res = await fetch("http://localhost:3001/api/insights", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          budgetItems: budgetData,
-          goals: goalsData,
-          transactions,
-          userId: user.id,
-        }),
-      });
-
+      const res = await fetch(
+        "http://localhost:3001/api/insights",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            budgetItems: budgetData,
+            goals: goalsData,
+            transactions,
+            userId: user.id,
+          }),
+        }
+      );
       const result = await res.json();
-      console.log("🧠 AI response:", result);
-
       if (result.insights) {
         setInsights(result.insights);
         localStorage.setItem(
           "ai_insights_cache",
-          JSON.stringify({ insights: result.insights, lastUpdated: today, dataHash: hash })
+          JSON.stringify({
+            insights: result.insights,
+            lastUpdated: today,
+            dataHash: hash,
+          })
         );
       }
     } catch (err) {
@@ -126,123 +145,115 @@ export default function Dashboard() {
     }
   };
 
+  // initial load
   useEffect(() => {
-    const run = async () => {
+    (async () => {
       setLoading(true);
       await fetchData();
       setLoading(false);
-    };
-    run();
+    })();
   }, [user]);
 
+  // fetch insights when budget/goals/plan arrive
   useEffect(() => {
-    if (budgetItems.length > 0 || goals.length > 0) {
+    if (
+      subscription &&
+      user &&
+      (budgetItems.length > 0 || goals.length > 0)
+    ) {
       fetchInsights(budgetItems, goals);
     }
-  }, [budgetItems, goals, subscription]);
+  }, [budgetItems, goals, subscription, user]);
 
   const income = budgetItems
-    .filter((item) => item.type === "income")
-    .reduce((sum, item) => sum + monthlyAmount(item), 0);
-
+    .filter((i) => i.type === "income")
+    .reduce((s, i) => s + monthlyAmount(i), 0);
   const expenses = budgetItems
-    .filter((item) => item.type === "expense")
-    .reduce((sum, item) => sum + monthlyAmount(item), 0);
-
+    .filter((i) => i.type === "expense")
+    .reduce((s, i) => s + monthlyAmount(i), 0);
   const net = income - expenses;
+
+  // now just a flat string array
+  const formattedTips: string[] = Array.isArray(insights?.tips)
+    ? insights.tips.filter((t) => typeof t === "string")
+    : [];
 
   return (
     <div className="space-y-10">
       <section className="bg-white shadow rounded-lg p-6">
-        <h2 className="text-2xl font-semibold text-foreground mb-4">Monthly Summary</h2>
+        <h2 className="text-2xl font-semibold text-foreground mb-4">
+          Monthly Summary
+        </h2>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-green-100 p-4 rounded">
             <p className="text-sm text-green-800">Income</p>
-            <p className="text-xl font-bold text-green-800">${income.toFixed(2)}</p>
+            <p className="text-xl font-bold text-green-800">
+              ${income.toFixed(2)}
+            </p>
           </div>
           <div className="bg-red-100 p-4 rounded">
             <p className="text-sm text-red-800">Expenses</p>
-            <p className="text-xl font-bold text-red-800">${expenses.toFixed(2)}</p>
+            <p className="text-xl font-bold text-red-800">
+              ${expenses.toFixed(2)}
+            </p>
           </div>
           <div className="bg-blue-100 p-4 rounded">
             <p className="text-sm text-blue-800">Net</p>
-            <p className="text-xl font-bold text-blue-800">${net.toFixed(2)}</p>
+            <p className="text-xl font-bold text-blue-800">
+              ${net.toFixed(2)}
+            </p>
           </div>
         </div>
       </section>
 
       <section className="bg-white shadow rounded-lg p-6">
-        <h2 className="text-2xl font-semibold text-foreground mb-4">Goals Overview</h2>
-        <div className="space-y-4">
-          {goals.map((goal) => {
-            const progress =
-              goal.type === "payoff"
-                ? ((goal.target_amount - goal.current_saved) / goal.target_amount) * 100
-                : (goal.current_saved / goal.target_amount) * 100;
-
-            return (
-              <div key={goal.id} className="space-y-1">
-                <div className="flex justify-between text-sm font-medium">
-                  <span>{goal.name}</span>
-                  <span className="text-muted-foreground">
-                    {goal.type === "payoff"
-                      ? `$${(goal.target_amount - goal.current_saved).toLocaleString()} left / $${goal.target_amount.toLocaleString()}`
-                      : `$${goal.current_saved.toLocaleString()} / $${goal.target_amount.toLocaleString()}`}
-                  </span>
-                </div>
-                <div className="w-full bg-gray-200 rounded-full h-2.5">
-                  <div
-                    className={`${
-                      goal.type === "payoff" ? "bg-red-500" : "bg-green-500"
-                    } h-2.5 rounded-full`}
-                    style={{
-                      width: `${
-                        goal.type === "payoff"
-                          ? 100 - Math.min(progress, 100)
-                          : Math.min(progress, 100)
-                      }%`,
-                    }}
-                  />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="bg-white shadow rounded-lg p-6">
-        <h2 className="text-2xl font-semibold text-foreground mb-4">AI Insights</h2>
+        <h2 className="text-2xl font-semibold text-foreground mb-4">
+          AI Insights
+        </h2>
         {loading ? (
-          <p className="text-muted-foreground text-sm">Loading AI insights...</p>
+          <p className="text-muted-foreground text-sm">Loading...</p>
         ) : subscription === "free" ? (
-          <p className="text-sm text-muted-foreground">
-            Upgrade to Growth or Premium to unlock AI insights.
+          <p className="text-muted-foreground text-sm">
+            Upgrade to access AI insights.
           </p>
-        ) : insights ? (
+        ) : subscription === "growth" && formattedTips.length > 0 ? (
+          <>
+            <p className="text-muted-foreground text-sm mb-2">
+              Basic insights enabled. Upgrade to Premium for full AI
+              coaching.
+            </p>
+            <ul className="list-disc pl-5 space-y-1 text-muted-foreground text-sm">
+              {formattedTips.map((tip, idx) => (
+                <li key={idx}>{tip}</li>
+              ))}
+            </ul>
+          </>
+        ) : subscription === "premium" && insights ? (
           <div className="space-y-4 text-sm text-muted-foreground">
             <p>
-              <strong>Summary:</strong>{" "}
-              {insights?.summary ?? "No summary provided."}
+              <strong>Summary:</strong> {insights.summary ?? "No summary provided."}
             </p>
             <div>
               <strong>Action Items:</strong>
-              <ul className="list-disc pl-5 space-y-1">
-                {(insights?.actionItems ?? []).map((item, idx) => (
+              <ul className="list-disc pl-5">
+                {insights.actionItems?.map((item, idx) => (
                   <li key={idx}>{item}</li>
                 ))}
               </ul>
             </div>
             <div>
               <strong>Next Steps:</strong>
-              <ul className="list-disc pl-5 space-y-1">
-                {(insights?.nextSteps ?? []).map((step, idx) => (
+              <ul className="list-disc pl-5">
+                {insights.nextSteps?.map((step, idx) => (
                   <li key={idx}>{step}</li>
                 ))}
               </ul>
             </div>
           </div>
         ) : (
-          <p className="text-sm text-muted-foreground">No insights available.</p>
+          <p className="text-muted-foreground text-sm">
+            No insights available.
+          </p>
         )}
       </section>
     </div>
